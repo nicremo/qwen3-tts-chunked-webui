@@ -91,7 +91,7 @@ def get_language_code(language: str) -> str:
 def validate_reference_audio(
     audio_data: Optional[tuple],
     min_duration_sec: float = 3.0,
-    max_duration_sec: float = 60.0
+    max_duration_sec: float = 30.0
 ) -> tuple[bool, str]:
     """
     Validate reference audio.

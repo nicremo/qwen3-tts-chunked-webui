@@ -189,6 +189,15 @@ class TTSModel:
             logger.error(traceback.format_exc())
             raise
 
+    # Stable generation parameters to avoid NaN/Inf errors
+    STABLE_GEN_KWARGS = {
+        "temperature": 0.7,           # Lower = more stable (default often 0.9)
+        "top_k": 30,                  # Limit sampling pool
+        "top_p": 0.9,                 # Nucleus sampling
+        "repetition_penalty": 1.1,    # Slight penalty for repetition
+        "do_sample": True,
+    }
+
     def generate_single(
         self,
         text: str,
@@ -210,6 +219,10 @@ class TTSModel:
         logger.info(f"voice_prompt type: {type(voice_prompt)}")
         logger.info(f"additional kwargs: {kwargs}")
 
+        # Merge stable defaults with any user overrides
+        gen_kwargs = {**self.STABLE_GEN_KWARGS, **kwargs}
+        logger.info(f"Generation kwargs: {gen_kwargs}")
+
         try:
             logger.info("Entering torch.inference_mode()...")
             with torch.inference_mode():
@@ -222,7 +235,7 @@ class TTSModel:
                     text=text,
                     language=language,
                     voice_clone_prompt=voice_prompt,
-                    **kwargs
+                    **gen_kwargs
                 )
 
                 if torch.cuda.is_available():
@@ -247,6 +260,42 @@ class TTSModel:
                 logger.info(f"Final audio dtype: {audio.dtype}")
 
             return audio, sr
+
+        except RuntimeError as e:
+            if "probability tensor" in str(e).lower() or "nan" in str(e).lower():
+                logger.warning(f"NaN/Inf error detected, retrying with lower temperature...")
+                self.cleanup()
+
+                # Retry with more conservative parameters
+                retry_kwargs = {
+                    **gen_kwargs,
+                    "temperature": 0.3,
+                    "top_k": 15,
+                    "top_p": 0.8,
+                }
+                logger.info(f"Retry kwargs: {retry_kwargs}")
+
+                try:
+                    with torch.inference_mode():
+                        wavs, sr = self.model.generate_voice_clone(
+                            text=text,
+                            language=language,
+                            voice_clone_prompt=voice_prompt,
+                            **retry_kwargs
+                        )
+
+                    audio = wavs[0] if isinstance(wavs, list) else wavs
+                    logger.info(f"Retry successful! Audio shape: {audio.shape if hasattr(audio, 'shape') else 'N/A'}")
+                    return audio, sr
+
+                except Exception as retry_error:
+                    logger.error(f"Retry also FAILED: {retry_error}")
+                    logger.error(traceback.format_exc())
+                    raise
+            else:
+                logger.error(f"generate_single FAILED: {e}")
+                logger.error(traceback.format_exc())
+                raise
 
         except Exception as e:
             logger.error(f"generate_single FAILED: {e}")

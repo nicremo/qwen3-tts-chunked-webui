@@ -142,7 +142,7 @@ def generate_tts(
 
     if ref_audio is None:
         logger.error("VALIDATION FAILED: No reference audio")
-        return None, None, "❌ Please upload reference audio (3-60 seconds)."
+        return None, None, "❌ Please upload reference audio (3-30 seconds)."
 
     if not ref_text.strip():
         logger.error("VALIDATION FAILED: No reference text")
@@ -393,7 +393,7 @@ def create_interface() -> gr.Blocks:
 
                 with gr.Row():
                     ref_audio = gr.Audio(
-                        label="Reference Audio (3-60 seconds)",
+                        label="Reference Audio (3-30 seconds)",
                         type="numpy",
                         sources=["upload", "microphone"]
                     )
