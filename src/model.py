@@ -4,8 +4,13 @@ Qwen3-TTS Model wrapper with optimizations for RTX 4090.
 
 import gc
 import os
+import logging
+import traceback
 from typing import List, Tuple, Optional, Union
 import numpy as np
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # Set environment variables before importing torch
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:512,garbage_collection_threshold:0.8")
@@ -16,13 +21,6 @@ import torch
 class TTSModel:
     """
     Wrapper for Qwen3-TTS with performance optimizations.
-
-    Features:
-    - Flash Attention 2 support
-    - bf16/fp16 precision
-    - torch.compile optimization
-    - Voice prompt caching for efficient batch generation
-    - Automatic memory cleanup
     """
 
     MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
@@ -48,18 +46,15 @@ class TTSModel:
         device: str = "cuda:0",
         dtype: torch.dtype = torch.bfloat16,
         use_flash_attention: bool = True,
-        compile_model: bool = False,  # Disabled by default, can cause issues
+        compile_model: bool = False,
     ):
-        """
-        Initialize the TTS model wrapper.
+        logger.info("TTSModel.__init__ called")
+        logger.info(f"  model_id: {model_id or self.MODEL_ID}")
+        logger.info(f"  device: {device}")
+        logger.info(f"  dtype: {dtype}")
+        logger.info(f"  use_flash_attention: {use_flash_attention}")
+        logger.info(f"  compile_model: {compile_model}")
 
-        Args:
-            model_id: HuggingFace model ID or local path
-            device: Device to load model on (cuda:0, cpu, auto)
-            dtype: Model precision (torch.bfloat16, torch.float16)
-            use_flash_attention: Enable Flash Attention 2
-            compile_model: Enable torch.compile (experimental)
-        """
         self.model_id = model_id or self.MODEL_ID
         self.device = device
         self.dtype = dtype
@@ -71,90 +66,128 @@ class TTSModel:
 
         # Setup CUDA optimizations
         if torch.cuda.is_available():
+            logger.info("CUDA is available, setting optimizations...")
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+            logger.info(f"CUDA device count: {torch.cuda.device_count()}")
+            logger.info(f"CUDA current device: {torch.cuda.current_device()}")
+            logger.info(f"CUDA device name: {torch.cuda.get_device_name()}")
+        else:
+            logger.warning("CUDA is NOT available!")
 
     def load(self) -> None:
         """Load the model with optimizations."""
         if self._is_loaded:
+            logger.info("Model already loaded, skipping")
             return
 
-        from qwen_tts import Qwen3TTSModel
+        logger.info("=" * 40)
+        logger.info("TTSModel.load() starting...")
+        logger.info("=" * 40)
+
+        logger.info("Importing qwen_tts...")
+        try:
+            from qwen_tts import Qwen3TTSModel
+            logger.info("qwen_tts imported successfully")
+        except Exception as e:
+            logger.error(f"Failed to import qwen_tts: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
         # Determine attention implementation
         attn_impl = "flash_attention_2" if self.use_flash_attention else "eager"
 
-        print(f"Loading model: {self.model_id}")
-        print(f"Device: {self.device}, Dtype: {self.dtype}, Attention: {attn_impl}")
+        logger.info(f"Loading model: {self.model_id}")
+        logger.info(f"Device: {self.device}")
+        logger.info(f"Dtype: {self.dtype}")
+        logger.info(f"Attention: {attn_impl}")
 
         try:
+            logger.info("Calling Qwen3TTSModel.from_pretrained...")
             self.model = Qwen3TTSModel.from_pretrained(
                 self.model_id,
                 device_map=self.device,
                 dtype=self.dtype,
                 attn_implementation=attn_impl,
             )
+            logger.info("Model loaded with flash attention!")
         except Exception as e:
-            # Fallback without flash attention
-            print(f"Warning: Could not load with flash attention: {e}")
-            print("Falling back to eager attention...")
-            self.model = Qwen3TTSModel.from_pretrained(
-                self.model_id,
-                device_map=self.device,
-                dtype=self.dtype,
-                attn_implementation="eager",
-            )
+            logger.warning(f"Could not load with flash attention: {e}")
+            logger.info("Falling back to eager attention...")
+            try:
+                self.model = Qwen3TTSModel.from_pretrained(
+                    self.model_id,
+                    device_map=self.device,
+                    dtype=self.dtype,
+                    attn_implementation="eager",
+                )
+                logger.info("Model loaded with eager attention")
+            except Exception as e2:
+                logger.error(f"Failed to load model even with eager attention: {e2}")
+                logger.error(traceback.format_exc())
+                raise
 
-        # Optional: torch.compile for faster inference
+        # Optional: torch.compile
         if self.compile_model and hasattr(torch, 'compile'):
-            print("Compiling model with torch.compile...")
+            logger.info("Attempting torch.compile...")
             try:
                 self.model = torch.compile(self.model, mode="max-autotune")
+                logger.info("torch.compile successful")
             except Exception as e:
-                print(f"Warning: torch.compile failed: {e}")
+                logger.warning(f"torch.compile failed: {e}")
 
         self._is_loaded = True
-        print("Model loaded successfully!")
+        logger.info("Model loading complete!")
 
         # Warmup
         self._warmup()
 
     def _warmup(self) -> None:
         """Warmup inference for optimal performance."""
-        print("Warming up model...")
-        # Note: Actual warmup would require reference audio
-        # This is just to ensure CUDA is initialized
+        logger.info("Warming up model...")
         if torch.cuda.is_available():
             torch.cuda.synchronize()
-        print("Warmup complete!")
+            logger.info(f"CUDA memory allocated: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+            logger.info(f"CUDA memory reserved: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+        logger.info("Warmup complete!")
 
     def create_voice_prompt(
         self,
         ref_audio: Union[str, Tuple[np.ndarray, int]],
         ref_text: str
     ) -> dict:
-        """
-        Create a reusable voice clone prompt.
+        """Create a reusable voice clone prompt."""
+        logger.info("=" * 40)
+        logger.info("create_voice_prompt called")
+        logger.info("=" * 40)
 
-        This extracts speaker features once and can be reused for
-        multiple generations, improving efficiency.
-
-        Args:
-            ref_audio: Path to reference audio OR (numpy_array, sample_rate)
-            ref_text: Transcript of the reference audio
-
-        Returns:
-            Voice prompt dictionary for generate_voice_clone
-        """
         if not self._is_loaded:
+            logger.info("Model not loaded, loading now...")
             self.load()
 
-        return self.model.create_voice_clone_prompt(
-            ref_audio=ref_audio,
-            ref_text=ref_text,
-            x_vector_only_mode=False
-        )
+        logger.info(f"ref_audio type: {type(ref_audio)}")
+        if isinstance(ref_audio, tuple):
+            audio_arr, sr = ref_audio
+            logger.info(f"ref_audio is tuple: array shape={audio_arr.shape}, sr={sr}")
+        else:
+            logger.info(f"ref_audio is: {ref_audio}")
+        logger.info(f"ref_text: {ref_text[:100] if ref_text else 'EMPTY'}...")
+
+        try:
+            logger.info("Calling model.create_voice_clone_prompt...")
+            result = self.model.create_voice_clone_prompt(
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                x_vector_only_mode=False
+            )
+            logger.info(f"Voice prompt created successfully!")
+            logger.info(f"Result type: {type(result)}")
+            return result
+        except Exception as e:
+            logger.error(f"create_voice_clone_prompt FAILED: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
     def generate_single(
         self,
@@ -163,33 +196,62 @@ class TTSModel:
         voice_prompt: dict,
         **kwargs
     ) -> Tuple[np.ndarray, int]:
-        """
-        Generate audio for a single text.
+        """Generate audio for a single text."""
+        logger.info("=" * 40)
+        logger.info("generate_single called")
+        logger.info("=" * 40)
 
-        Args:
-            text: Text to synthesize
-            language: Language (English, German, etc.)
-            voice_prompt: Voice prompt from create_voice_prompt()
-            **kwargs: Additional generation parameters
-
-        Returns:
-            (audio_array, sample_rate)
-        """
         if not self._is_loaded:
+            logger.info("Model not loaded, loading now...")
             self.load()
 
-        with torch.inference_mode():
-            wavs, sr = self.model.generate_voice_clone(
-                text=text,
-                language=language,
-                voice_clone_prompt=voice_prompt,
-                **kwargs
-            )
+        logger.info(f"text: {text[:100]}..." if len(text) > 100 else f"text: {text}")
+        logger.info(f"language: {language}")
+        logger.info(f"voice_prompt type: {type(voice_prompt)}")
+        logger.info(f"additional kwargs: {kwargs}")
 
-        # Handle both single and list returns
-        audio = wavs[0] if isinstance(wavs, list) else wavs
+        try:
+            logger.info("Entering torch.inference_mode()...")
+            with torch.inference_mode():
+                logger.info("Calling model.generate_voice_clone...")
 
-        return audio, sr
+                if torch.cuda.is_available():
+                    logger.info(f"CUDA memory before generation: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
+                wavs, sr = self.model.generate_voice_clone(
+                    text=text,
+                    language=language,
+                    voice_clone_prompt=voice_prompt,
+                    **kwargs
+                )
+
+                if torch.cuda.is_available():
+                    logger.info(f"CUDA memory after generation: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
+            logger.info(f"generate_voice_clone returned!")
+            logger.info(f"wavs type: {type(wavs)}")
+            logger.info(f"sr: {sr}")
+
+            # Handle both single and list returns
+            if isinstance(wavs, list):
+                logger.info(f"wavs is a list with {len(wavs)} elements")
+                audio = wavs[0]
+            else:
+                logger.info("wavs is not a list, using directly")
+                audio = wavs
+
+            logger.info(f"Final audio type: {type(audio)}")
+            if hasattr(audio, 'shape'):
+                logger.info(f"Final audio shape: {audio.shape}")
+            if hasattr(audio, 'dtype'):
+                logger.info(f"Final audio dtype: {audio.dtype}")
+
+            return audio, sr
+
+        except Exception as e:
+            logger.error(f"generate_single FAILED: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
     def generate_batch(
         self,
@@ -198,43 +260,44 @@ class TTSModel:
         voice_prompt: dict,
         **kwargs
     ) -> Tuple[List[np.ndarray], int]:
-        """
-        Generate audio for multiple texts (batch).
+        """Generate audio for multiple texts (batch)."""
+        logger.info(f"generate_batch called with {len(texts)} texts")
 
-        Args:
-            texts: List of texts to synthesize
-            language: Language (applied to all texts)
-            voice_prompt: Voice prompt from create_voice_prompt()
-            **kwargs: Additional generation parameters
-
-        Returns:
-            (list_of_audio_arrays, sample_rate)
-        """
         if not self._is_loaded:
             self.load()
 
         languages = [language] * len(texts)
 
-        with torch.inference_mode():
-            wavs, sr = self.model.generate_voice_clone(
-                text=texts,
-                language=languages,
-                voice_clone_prompt=voice_prompt,
-                **kwargs
-            )
+        try:
+            with torch.inference_mode():
+                wavs, sr = self.model.generate_voice_clone(
+                    text=texts,
+                    language=languages,
+                    voice_clone_prompt=voice_prompt,
+                    **kwargs
+                )
 
-        # Ensure we have a list
-        if not isinstance(wavs, list):
-            wavs = [wavs]
+            if not isinstance(wavs, list):
+                wavs = [wavs]
 
-        return wavs, sr
+            logger.info(f"Batch generation complete: {len(wavs)} audio files")
+            return wavs, sr
+
+        except Exception as e:
+            logger.error(f"generate_batch FAILED: {e}")
+            logger.error(traceback.format_exc())
+            raise
 
     def cleanup(self) -> None:
         """Clean up GPU memory."""
+        logger.info("cleanup() called")
         gc.collect()
         if torch.cuda.is_available():
+            before = torch.cuda.memory_allocated() / 1e9
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            after = torch.cuda.memory_allocated() / 1e9
+            logger.info(f"CUDA memory: {before:.2f} GB -> {after:.2f} GB")
 
     def get_supported_languages(self) -> List[str]:
         """Get list of supported languages."""
@@ -242,6 +305,7 @@ class TTSModel:
 
     def unload(self) -> None:
         """Unload the model to free memory."""
+        logger.info("unload() called")
         if self.model is not None:
             del self.model
             self.model = None
