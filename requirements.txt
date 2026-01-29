@@ -1,0 +1,25 @@
+# Core ML
+torch>=2.2.0
+torchaudio>=2.2.0
+
+# Qwen3-TTS
+qwen-tts>=0.1.0
+transformers>=4.40.0
+accelerate>=0.28.0
+
+# Web UI
+gradio>=4.44.0
+
+# Audio Processing
+scipy>=1.12.0
+numpy>=1.24.0
+soundfile>=0.12.0
+
+# Text Processing
+pysbd>=0.3.4
+
+# Flash Attention (optional, install separately)
+# flash-attn>=2.5.0
+
+# Utils
+tqdm>=4.66.0
